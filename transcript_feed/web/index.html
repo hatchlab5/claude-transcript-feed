@@ -1,0 +1,420 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>agent — live</title>
+<!-- APPEND-ONLY view. The source is Claude Code's JSONL transcript, not a screenshot of a
+     terminal. Because every event carries a STABLE id and never changes, this page only
+     ever APPENDS: it never re-renders, re-classes or re-orders a line already on screen.
+     That is what stops the flicker — not a CSS tweak. It polls feed.json. -->
+<style>
+  :root{
+    --bg:#08090a; --accent:#38bdf8; --green:#4ade80; --orange:#fb923c;
+    --text:#e7ebf0; --dim:#5d6672; --faint:#3f4650; --grey:#79828f; --said:#59636f;
+    /* Read like a terminal: monospace, everywhere, at one size. A console shown in a UI
+       sans face reads like a webpage ABOUT the work; in a mono face it reads like the work. */
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Cascadia Mono",
+            "JetBrains Mono", "DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono", monospace;
+    /* One type scale, defined once. A gentle slope so the design is recognisably itself at
+       any pane width. The headline is NOT bigger than the body — it wins by contrast and the
+       accent rule, on a wall of dimmed work. */
+    --t-name: clamp(19px, 1.05vw, 27px);
+    --t-hl:   clamp(14px, 0.82vw, 20px);
+    --t-body: clamp(14px, 0.82vw, 20px);
+    --t-dim:  clamp(13px, 0.76vw, 19px);
+    --t-mono: clamp(12.5px, 0.74vw, 18px);
+    --t-fine: clamp(11.5px, 0.64vw, 15px);
+    --pad-x:  clamp(8px, 0.5vw, 14px);
+    --pad-y:  clamp(18px, 1.2vw, 34px);
+    --gap-ev: clamp(7px, 0.55vw, 13px);
+    --z: 1;   /* reader zoom; multiplies every type size so nothing drifts out of proportion */
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    background:
+      radial-gradient(120% 80% at 12% 0%, rgba(56,189,248,.09), transparent 60%),
+      radial-gradient(90% 70% at 100% 100%, rgba(74,222,128,.05), transparent 55%),
+      var(--bg);
+    color:var(--text); font:15px/1.55 var(--mono);
+    display:flex; flex-direction:column; overflow:hidden; position:relative;
+    padding:6px var(--pad-x) calc(var(--pad-y) * .8);
+  }
+  header{display:flex;align-items:baseline;gap:.5rem;flex-wrap:nowrap;flex:0 0 auto}
+  .who{font:600 calc(var(--t-name) * var(--z))/1 var(--mono);letter-spacing:-.01em;white-space:nowrap}
+  .relaystate{margin-left:auto;font:500 calc(var(--t-fine) * var(--z))/1 var(--mono);
+              color:var(--faint);letter-spacing:.04em;white-space:nowrap}
+  .relaystate.lost{color:var(--orange)}
+  .ctl{flex:0 0 auto;display:flex;justify-content:flex-end;align-items:center;min-height:22px;margin-bottom:2px}
+  .zoom{display:flex;gap:0}
+  .zoom button{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);
+               color:var(--dim);cursor:pointer;font:600 13px/1 var(--mono);
+               padding:.35em .6em;transition:background .15s,color .15s}
+  .zoom #zoom-out{border-radius:6px 0 0 6px}
+  .zoom #zoom-in{border-radius:0 6px 6px 0;border-left:0}
+  .zoom button:hover{background:rgba(56,189,248,.14);color:var(--accent)}
+  .dot{width:var(--t-fine);height:var(--t-fine);border-radius:50%;flex:0 0 auto;align-self:center}
+  /* green means MOTION and only motion — it is the one colour here that moves */
+  .dot.working{background:var(--green);box-shadow:0 0 9px var(--green);animation:breathe 1.4s ease-in-out infinite}
+  .dot.idle{background:var(--grey)}
+  .dot.gone{background:var(--orange);box-shadow:0 0 6px var(--orange)}
+  @keyframes breathe{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.65);opacity:.5}}
+  .verb{color:var(--accent);font-weight:500;font-size:calc(var(--t-body) * var(--z));white-space:nowrap}
+  .verb.working{color:var(--green)}
+  .verb.idle{color:var(--grey)}
+  .verb.gone{color:var(--orange)}
+  .age{font:500 calc(var(--t-fine) * var(--z))/1 var(--mono);color:var(--faint);
+       letter-spacing:.03em;white-space:nowrap;font-variant-numeric:tabular-nums}
+  .age.working{color:var(--green);opacity:.72}
+  .thinks{font:600 calc(var(--t-fine) * var(--z))/1 var(--mono);color:var(--faint);
+    letter-spacing:.03em;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .thinks.on{color:var(--accent)}
+  .rule{flex:0 0 auto;height:1px;margin:clamp(10px,0.9vw,20px) 0 0;
+        background:linear-gradient(90deg,rgba(56,189,248,.5),rgba(56,189,248,.05) 40%,transparent)}
+
+  /* Bottom-anchored: "now" sits where the eye lands, history rises and fades out the top.
+     Bottom-anchor via margin-top:auto (not flex-end) so overflow at the TOP stays scrollable. */
+  #stream{flex:1 1 auto;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;
+          scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.14) transparent;
+          gap:var(--gap-ev);padding-top:calc(var(--gap-ev) * 1.4);
+          mask-image:linear-gradient(180deg,transparent,#000 12%,#000);
+          -webkit-mask-image:linear-gradient(180deg,transparent,#000 12%,#000)}
+  #stream > :first-child{margin-top:auto}
+  #stream::-webkit-scrollbar{width:8px}
+  #stream::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:4px}
+  #tolive{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(var(--pad-y) + .6em);
+    z-index:6;display:none;cursor:pointer;border:1px solid rgba(56,189,248,.4);
+    background:rgba(10,18,26,.92);color:var(--accent);border-radius:999px;padding:.35em .9em;
+    font:600 calc(var(--t-fine) * var(--z))/1 var(--mono)}
+  #tolive.on{display:block}
+
+  /* An event animates ONCE, as it arrives, and is never touched again. It enters from
+     BELOW and the column rises to make room, so the motion reads as flowing up. */
+  .ev{padding-left:.4rem;border-left:2px solid transparent;max-width:none;
+      animation:flowup .55s cubic-bezier(.22,.68,.28,1) both}
+  @keyframes flowup{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+  .ev.nofx{animation:none}   /* backfilled history: it was always there, it did not just arrive */
+
+  /* WHAT WAS ASKED — a person speaking, so it reads like one */
+  .ev.prompt{font:500 calc(var(--t-body) * var(--z))/1.5 var(--mono);color:#cfe6ff;
+    border-left-color:rgba(56,189,248,.55);white-space:pre-wrap;word-break:break-word;
+    background:linear-gradient(90deg,rgba(56,189,248,.09),transparent 70%);
+    padding-top:.35em;padding-bottom:.35em;border-radius:0 8px 8px 0}
+
+  /* A said paragraph — quiet, until it is the newest reply */
+  .ev.say{font-size:calc(var(--t-body) * var(--z));line-height:1.5;color:var(--said);white-space:pre-wrap}
+  /* THE HEADLINE: the whole newest reply, set bright with the accent rule down its edge.
+     Consecutive highlighted rows cancel the column gap so the rule runs unbroken. */
+  .ev.newest + .ev.newest{margin-top:calc(-1 * var(--gap-ev));padding-top:var(--gap-ev)}
+  .ev.newest{border-left-color:var(--accent);color:#d9ecff;font-weight:500;
+             text-shadow:0 0 14px rgba(120,190,255,.10);
+             font-size:calc(var(--t-hl) * var(--z));line-height:1.3;letter-spacing:-.014em;width:100%}
+
+  /* A tool CALL is a move, not a statement. A column, not a row: the command and its
+     output stack UNDER the name rather than running off to the right. */
+  .ev.action{font:500 calc(var(--t-mono) * var(--z))/1.45 var(--mono);color:var(--green);
+             opacity:.7;letter-spacing:-.01em;display:block;cursor:pointer}
+  .ev.action .arow{display:flex;gap:.6em;align-items:baseline}
+  .ev.action .n{color:var(--green)}
+  .ev.action .ac{color:var(--faint);transition:transform .15s;display:inline-block;flex:0 0 auto}
+  .ev.action.open .ac{transform:rotate(90deg)}
+  .ev.action .d{display:block;color:var(--dim);opacity:.85;white-space:pre-wrap;
+    word-break:break-word;margin-top:.15em}
+  /* Closed shows ~3 lines of output — enough to see whether it worked; the rest is a click away. */
+  .ev.action .aout{margin:.3em 0 0;padding-left:.6rem;white-space:pre-wrap;word-break:break-word;
+    border-left:1px solid rgba(255,255,255,.08);color:var(--faint);
+    font:400 calc(var(--t-mono) * var(--z))/1.5 var(--mono);
+    max-height:calc(var(--t-mono) * var(--z) * 1.5 * 3);overflow:hidden}
+  .ev.action.open .aout{max-height:38vh;overflow:auto;color:var(--dim)}
+  .ev.action .acmd{display:none;color:#cfe6ff;opacity:.9;white-space:pre-wrap;word-break:break-word;
+    margin:.35em 0 .25em;padding-left:.6rem;border-left:1px solid rgba(56,189,248,.35);
+    font:400 calc(var(--t-mono) * var(--z))/1.5 var(--mono);max-height:22vh;overflow:auto}
+  .ev.action.open .acmd{display:block}
+  /* still running: the result has not come back yet */
+  .ev.action.running .n::after{content:"";display:inline-block;width:.45em;height:.45em;
+    margin-left:.5em;border-radius:50%;background:var(--green);
+    animation:breathe 1.2s ease-in-out infinite;vertical-align:middle}
+
+  /* A background agent is a different hand working in here — its own colour, not this
+     agent's green. It stays running until its report lands. */
+  .ev.agent{color:#c9a7ff}
+  .ev.agent .n{color:#c9a7ff}
+  .ev.agent .n::before{content:"agent ";opacity:.5;font-weight:400}
+  .ev.agent .aout{border-left-color:rgba(201,167,255,.35)}
+
+  /* WHAT CAME BACK — evidence under the move it answers */
+  .ev.result{font:calc(var(--t-mono) * var(--z))/1.5 var(--mono);color:var(--dim);opacity:.6;
+             padding-left:2.4rem;max-width:104ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* THE REASONING — quietest of all, but present, so the process is visible as it happens */
+  .ev.think{font-size:calc(var(--t-dim) * var(--z));line-height:1.5;color:var(--faint);
+            font-style:italic;max-width:none;white-space:pre-wrap}
+  .empty{color:var(--faint);font-style:italic;animation:none}
+
+  /* the inline "thinking" dots: they sit at the END of the stream, where the next line
+     will land, so they read as "something is coming" */
+  .ev.thinking{display:flex;gap:.34em;align-items:center;padding:.45em 0 .5em .4rem;border-left-color:var(--green)}
+  .ev.thinking .tdot{width:.42em;height:.42em;border-radius:50%;background:var(--green);
+    opacity:.25;animation:tthink 1.15s ease-in-out infinite}
+  .ev.thinking .tdot:nth-child(2){animation-delay:.16s}
+  .ev.thinking .tdot:nth-child(3){animation-delay:.32s}
+  .ev.thinking .tlbl{font:500 calc(var(--t-fine) * var(--z))/1 var(--mono);color:var(--green);
+    opacity:.6;letter-spacing:.05em;margin-left:.3em}
+  @keyframes tthink{0%,70%,100%{opacity:.22;transform:translateY(0)}35%{opacity:1;transform:translateY(-.18em)}}
+  @media (prefers-reduced-motion: reduce){ .ev.thinking .tdot{animation:none;opacity:.7} }
+
+  /* THE LAST PROMPT, pinned under the header — closed by default */
+  #lastp{flex:0 0 auto;margin-top:.5rem}
+  #lastp[hidden]{display:none!important}
+  #lastp summary{list-style:none;cursor:pointer;display:flex;align-items:baseline;gap:.5rem;
+    font:500 calc(var(--t-fine) * var(--z))/1.45 var(--mono);color:var(--dim);padding:.25em 0}
+  #lastp summary::-webkit-details-marker{display:none}
+  #lastp summary::before{content:"\203A";color:var(--faint);transition:transform .15s;
+    display:inline-block;font-size:1.2em;line-height:1}
+  #lastp[open] summary::before{transform:rotate(90deg)}
+  #lastp .one{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto}
+  #lastp .full{color:#cfe6ff;white-space:pre-wrap;max-height:34vh;overflow:auto;
+    font:400 calc(var(--t-dim) * var(--z))/1.5 var(--mono);padding:.1em 0 .2em 1.15rem}
+  #lastp:not([open]) .full{display:none}
+</style>
+
+<div class="ctl">
+  <span class="zoom">
+    <button id="zoom-out" title="smaller">&minus;</button>
+    <button id="zoom-in"  title="bigger">+</button>
+  </span>
+</div>
+<header>
+  <span class="dot idle" id="dot"></span>
+  <span class="who" id="who">agent</span>
+  <span class="verb" id="verb"></span>
+  <span class="thinks" id="thinks"></span>
+  <span class="age" id="age"></span>
+  <span class="relaystate" id="relaystate"></span>
+</header>
+<div class="rule"></div>
+<details id="lastp" hidden>
+  <summary><span class="one" id="lastp-one"></span></summary>
+  <div class="full" id="lastp-full"></div>
+</details>
+<div id="stream"><div class="ev say empty">waiting for the feed…</div></div>
+<button id="tolive" type="button">&darr; live</button>
+
+<script>
+const stream = document.getElementById('stream');
+const shown  = new Map();     // event id -> node. An id NEVER reappears with different content.
+let lastNewestTs = null, seeded = false;
+
+// The body of a tool block: the command that ran, then what it said. Called again when the
+// result lands, because an action event arrives BEFORE its output exists.
+function fillAction(el, e){
+  const has = !!e.out;
+  el.classList.toggle('running', !has);
+  if (e.cmd && !el.querySelector('.acmd')){
+    const c = document.createElement('pre'); c.className = 'acmd'; c.textContent = e.cmd;
+    el.appendChild(c);
+  }
+  if (!has) return;
+  let o = el.querySelector('.aout');
+  if (!o){ o = document.createElement('pre'); o.className = 'aout'; el.appendChild(o); }
+  if (o.textContent !== e.out) o.textContent = e.out;
+  el.dataset.out = '1';
+}
+function build(e){
+  const el = document.createElement('div');
+  el.className = 'ev ' + e.kind;
+  el.dataset.ts = e.ts || '';
+  if (e.kind === 'action' || e.kind === 'agent'){
+    const row = document.createElement('div'); row.className = 'arow';
+    const n = document.createElement('span'); n.className = 'n'; n.textContent = e.text;
+    row.appendChild(n);
+    const ac = document.createElement('span'); ac.className = 'ac'; ac.textContent = '\u203A';
+    row.appendChild(ac);
+    el.appendChild(row);
+    if (e.detail){
+      const d = document.createElement('div'); d.className = 'd'; d.textContent = e.detail;
+      el.appendChild(d);
+    }
+    fillAction(el, e);
+    el.addEventListener('click', ev => { ev.stopPropagation(); el.classList.toggle('open'); });
+    if (e.kind === 'agent') el.classList.add('action');   // same block behaviour, its own colour
+  } else {
+    el.textContent = e.text;
+  }
+  if (!seeded) el.style.animation = 'none';   // first paint must not fly the whole buffer up at once
+  return el;
+}
+
+function render(d){
+  const st = d.state || 'idle';
+  document.getElementById('dot').className = 'dot ' + (st === 'working' ? 'working'
+      : st === 'gone' ? 'gone' : 'idle');
+  document.getElementById('who').textContent = d.label || 'agent';
+  document.title = (d.label || 'agent') + ' — live';  // tab reflects --label, not a constant
+
+  // pinned last prompt — touched only when it actually changes, so it never fights the reader
+  const lp = document.getElementById('lastp'), pr = (d.prompt || '').trim();
+  if (pr){
+    lp.hidden = false;
+    const one = document.getElementById('lastp-one'), full = document.getElementById('lastp-full');
+    if (full.textContent !== pr){ full.textContent = pr; one.textContent = pr.split('\n')[0]; }
+  } else { lp.hidden = true; }
+
+  const reasoning = d.phase === 'reasoning';
+  const verb = document.getElementById('verb');
+  verb.className = 'verb ' + (st === 'working' ? 'working' : st === 'gone' ? 'gone' : 'idle');
+  verb.textContent = st === 'working' ? (reasoning ? 'thinking\u2026' : 'working\u2026')
+                   : st === 'gone'    ? 'no transcript' : 'idle';
+
+  const thinksEl = document.getElementById('thinks');
+  const n = Number(d.thinks || 0);
+  thinksEl.textContent = (st === 'working' && n > 0) ? (n + '\u00d7') : '';
+  thinksEl.className = 'thinks' + (reasoning ? ' on' : '');
+  thinksEl.title = n ? (n + ' reasoning block' + (n === 1 ? '' : 's') + ' this turn') : '';
+
+  // how long in this state — computed from the relay's OWN two numbers (ts - since), so a
+  // browser clock that is off still shows the right duration
+  ageBase  = Math.max(0, (Number(d.ts) || 0) - (Number(d.since) || 0));
+  ageHeard = Date.now();
+  ageState = st;
+  paintAge();
+
+  const evs = d.events || [];
+  const atBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 60;
+  if (!evs.length) return;
+  const empty = stream.querySelector('.empty'); if (empty) empty.remove();
+
+  const want = new Set(evs.map(e => e.id));
+  // retire what scrolled out of the window (no animation — it is leaving, not arriving)
+  for (const [id, el] of shown){ if (!want.has(id)){ el.remove(); shown.delete(id); } }
+
+  // APPEND arrivals only, IN ORDER. A node already on screen is never re-touched — which is
+  // precisely why nothing flickers. A node inserted before existing content is history
+  // filling space, not an arrival, so it skips the entrance animation.
+  let lastSay = null, prevEl = null;
+  for (const e of evs){
+    let el = shown.get(e.id);
+    if (el && (e.kind === 'action' || e.kind === 'agent') && e.out && el.dataset.out !== '1') fillAction(el, e);
+    if (!el){
+      el = build(e); shown.set(e.id, el);
+      const ref = prevEl ? prevEl.nextSibling : stream.firstChild;
+      if (ref) el.classList.add('nofx');
+      stream.insertBefore(el, ref);
+    }
+    prevEl = el;
+    if (e.kind === 'say') lastSay = el;
+  }
+
+  // inline "thinking" dots at the END of the stream while working — where the answer will land
+  let think = stream.querySelector('.thinking');
+  if (st === 'working'){
+    if (!think){
+      think = document.createElement('div');
+      think.className = 'ev thinking nofx';
+      think.innerHTML = '<span class="tdot"></span><span class="tdot"></span><span class="tdot"></span><span class="tlbl"></span>';
+    }
+    const lbl = think.querySelector('.tlbl');
+    if (lbl) lbl.textContent = reasoning ? ('reasoning' + (n > 1 ? ' \u00b7 ' + n + '\u00d7' : '')) : 'working';
+    if (think !== stream.lastChild) stream.appendChild(think);   // stay below events that arrive mid-turn
+  } else if (think){ think.remove(); }
+
+  // THE HEADLINE: the whole newest reply = every say event sharing the newest one's message ts
+  const newTs = lastSay ? (lastSay.dataset.ts || '') : null;
+  if (newTs !== lastNewestTs){
+    for (const el of stream.querySelectorAll('.ev.newest')) el.classList.remove('newest');
+    if (newTs !== null){
+      for (const el of stream.querySelectorAll('.ev.say')){
+        if ((el.dataset.ts || '') === newTs) el.classList.add('newest');
+      }
+    }
+    lastNewestTs = newTs;
+  }
+  // follow the tail only if we were ALREADY at the tail — never yank a reader who scrolled up.
+  // Happens AFTER .newest is applied, so the measurement includes the headline's heavier type.
+  if (atBottom){
+    stream.scrollTop = stream.scrollHeight;
+    requestAnimationFrame(() => { stream.scrollTop = stream.scrollHeight; });
+  }
+  seeded = true;
+}
+
+// ── "↓ live" pill + resize anchor ────────────────────────────────────────────────────
+const pill = document.getElementById('tolive');
+const nearBottom = () => stream.scrollHeight - stream.scrollTop - stream.clientHeight < 60;
+stream.addEventListener('scroll', () => pill.classList.toggle('on', !nearBottom()));
+pill.addEventListener('click', () => { stream.scrollTop = stream.scrollHeight; pill.classList.remove('on'); });
+// A pane that changes height must not change what you are reading: hold distance from the BOTTOM.
+let anchorFromBottom = 0;
+stream.addEventListener('scroll', () => {
+  anchorFromBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight;
+});
+if (window.ResizeObserver){
+  let t = null;
+  new ResizeObserver(() => {
+    if (t) cancelAnimationFrame(t);
+    t = requestAnimationFrame(() => {
+      stream.scrollTop = Math.max(0, stream.scrollHeight - stream.clientHeight - anchorFromBottom);
+    });
+  }).observe(stream);
+}
+
+// ── relay liveness ───────────────────────────────────────────────────────────────────
+// The dot must tell the truth about the RELAY, not just the agent: a feed is a FILE, so a
+// stopped relay leaves it perfectly fetchable forever. The relay's own ts advancing is the
+// evidence — comparing two of ITS numbers, never ours to its.
+let lastFeedAt = 0, lastTs = null;
+const STALE_AFTER = 12000;
+function paintLiveness(){
+  const el = document.getElementById('relaystate'), dot = document.getElementById('dot');
+  if (!lastFeedAt){ el.textContent = 'CONNECTING'; return; }
+  const age = Date.now() - lastFeedAt;
+  if (age > STALE_AFTER){
+    el.textContent = 'RELAY LOST \u00b7 ' + Math.round(age / 1000) + 'S';
+    el.classList.add('lost');
+    dot.className = 'dot gone';           // never show a live colour on stale data
+  } else { el.textContent = ''; el.classList.remove('lost'); }
+}
+setInterval(paintLiveness, 1000);
+
+// ── duration ticks every second (local delta), re-seated on every poll (relay truth) ───
+let ageBase = 0, ageHeard = 0, ageState = '';
+function humanAge(s){
+  s = Math.max(0, Math.floor(s));
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60), sec = s % 60;
+  if (m < 10) return m + 'm ' + String(sec).padStart(2, '0') + 's';
+  if (m < 60) return m + 'm';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ' + String(m % 60).padStart(2, '0') + 'm';
+  return Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
+}
+function paintAge(){
+  const el = document.getElementById('age'); if (!el) return;
+  // no number when the number would be a lie: a stale relay means the STATE is stale
+  const stale = !lastFeedAt || (Date.now() - lastFeedAt) > STALE_AFTER;
+  if (!ageHeard || stale || ageState === 'gone'){ el.textContent = ''; el.className = 'age'; return; }
+  el.textContent = humanAge(ageBase + (Date.now() - ageHeard) / 1000);
+  el.className = 'age' + (ageState === 'working' ? ' working' : '');
+}
+setInterval(paintAge, 1000);
+
+// ── zoom: one variable scales every type size; persisted ───────────────────────────────
+let Z = parseFloat(localStorage.getItem('feedZoom') || '1') || 1;
+function applyZoom(){
+  Z = Math.max(0.6, Math.min(2.6, Z));
+  document.documentElement.style.setProperty('--z', Z.toFixed(2));
+  localStorage.setItem('feedZoom', String(Z));
+}
+document.getElementById('zoom-in').onclick  = () => { Z += 0.12; applyZoom(); };
+document.getElementById('zoom-out').onclick = () => { Z -= 0.12; applyZoom(); };
+applyZoom();
+
+// ── poll ───────────────────────────────────────────────────────────────────────────────
+async function tick(){
+  try{
+    const r = await fetch('feed.json?t=' + Date.now(), {cache: 'no-store'});
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.ts !== lastTs){ lastTs = d.ts; lastFeedAt = Date.now(); }
+    render(d);
+  }catch(e){ /* a missed poll is not an error state — the next one covers it */ }
+}
+tick(); setInterval(tick, 2000);
+</script>

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-transcript-feed"
+version = "0.1.0"
+description = "Live, flicker-free web view of a Claude Code agent, streamed from its JSONL transcript."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Matt Bowman" }]
+keywords = ["claude", "claude-code", "transcript", "dashboard", "jsonl", "agent"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Environment :: Web Environment",
+  "Topic :: Utilities",
+]
+dependencies = []
+
+[project.scripts]
+claude-transcript-feed = "transcript_feed.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/hatchlab5/claude-transcript-feed"
+
+[tool.setuptools]
+packages = ["transcript_feed"]
+
+[tool.setuptools.package-data]
+transcript_feed = ["web/*.html"]
